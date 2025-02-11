@@ -2,94 +2,111 @@ import anthropic
 import requests
 import asyncio
 import re
+import json
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
-import os
-from dotenv import load_dotenv
 from firecrawl import FirecrawlApp
-load_dotenv()
+
+# ------------------------------
+# Data Classes
+# ------------------------------
 
 @dataclass
 class ChatContext:
+    """
+    Maintains a conversation context for interactions with Claude.
+    - messages: A list of message dictionaries.
+    - created_at: The timestamp when the conversation started.
+    """
     messages: List[Dict]
     created_at: datetime
 
 @dataclass
 class ResearchResult:
+    """
+    Holds research outcomes:
+    - learnings: A list of key learnings extracted from content.
+    - visited_urls: A list of URLs that were used as sources.
+    """
     learnings: List[str]
     visited_urls: List[str]
 
-class ResearchAssistant:
+# ------------------------------
+# ResearchAssistant Class
+# ------------------------------
+
+class ResearchAgent:
+    """
+    Provides methods to perform research by:
+      - Querying the FireCrawl API for search results.
+      - Using the Claude API (via Anthropics) for content analysis and follow-up topic generation.
+      - Recursively researching follow-up topics.
+      - Generating a final markdown report.
+    """
     def __init__(self, anthropic_api_key: str, firecrawl_api_key: str):
         self.client = anthropic.Client(api_key=anthropic_api_key)
         self.firecrawl_key = firecrawl_api_key
         self.firecrawlapp = FirecrawlApp(firecrawl_api_key)
         self.chat_contexts: Dict[str, ChatContext] = {}
-        self.max_concurrent = 2
+        self.max_concurrent = 2  # Maximum concurrent research threads
 
     def call_claude(self, prompt: str, context_id: Optional[str] = None) -> str:
         """
-        Makes a call to Claude API, maintaining conversation context if provided
+        Makes a call to the Claude API with the provided prompt.
+        If a context_id is given and found, it maintains the conversation history.
         """
         try:
+            # Uncomment the following line to see the prompts sent to Claude
+            # print(f"[DEBUG] Sending prompt to Claude: {prompt[:200]}...")
             if context_id and context_id in self.chat_contexts:
-                # Append to existing conversation
+                # Continue an existing conversation
                 context = self.chat_contexts[context_id]
                 context.messages.append({
                     "role": "user",
                     "content": prompt
                 })
-                
                 response = self.client.messages.create(
                     model="claude-3-5-haiku-20241022",
                     messages=context.messages,
                     max_tokens=4096
                 )
-                
                 context.messages.append({
                     "role": "assistant",
                     "content": response.content[0].text
                 })
-                
                 return response.content[0].text
-            
             else:
-                # Start new conversation
+                # Start a new conversation
                 new_context = ChatContext(
                     messages=[{"role": "user", "content": prompt}],
                     created_at=datetime.now()
                 )
-                
                 response = self.client.messages.create(
                     model="claude-3-5-haiku-20241022",
                     messages=new_context.messages,
                     max_tokens=4096
                 )
-                
                 new_context.messages.append({
                     "role": "assistant",
                     "content": response.content[0].text
                 })
-                
                 if context_id:
                     self.chat_contexts[context_id] = new_context
-                    
                 return response.content[0].text
-                
         except Exception as e:
             print(f"Error calling Claude API: {str(e)}")
             raise
 
-    def fire_crawl(self, query: str) -> str:
+    def fire_crawl(self, query: str) -> List[Dict]:
         """
-        Performs a web crawl using FireCrawl API
+        Uses the FireCrawl API to perform a web search based on the query.
+        Returns a list of search results (with title, URL, and markdown content).
         """
         try:
             url = "https://api.firecrawl.dev/v1/search"
-
             payload = {
                 "query": query,
                 "limit": 3,
@@ -104,46 +121,22 @@ class ResearchAssistant:
                 "Authorization": f"Bearer {self.firecrawl_key}",
                 "Content-Type": "application/json"
             }
-
-            response = requests.post(
-                url, 
-                json=payload,
-                headers=headers
-            )
-            
+            response = requests.post(url, json=payload, headers=headers)
             if response.status_code == 200:
-                return response.json().get("data", [])
+                results = response.json().get("data", [])
+                print(f"[INFO] FireCrawl returned {len(results)} results for query: '{query}'")
+                return results
             else:
-                print(f"FireCrawl API error: {response.status_code} - {response.text}")
+                print(f"[ERROR] FireCrawl API error: {response.status_code} - {response.text}")
                 return []
-                
         except requests.exceptions.RequestException as e:
-            print(f"Error calling FireCrawl API: {str(e)}")
+            print(f"[ERROR] Error calling FireCrawl API: {str(e)}")
             return []
-
-    def extract_urls_from_markdown(self, content: str) -> List[str]:
-        """
-        Extract URLs from markdown content
-        """
-        # Match markdown links [text](url) and bare URLs
-        url_pattern = r'\[([^\]]+)\]\((http[s]?://[^\s\)]+)\)|(?<![\(\[])(http[s]?://[^\s\)\]]+)'
-        urls = []
-        
-        for match in re.finditer(url_pattern, content):
-            url = match.group(2) if match.group(2) else match.group(1)
-            # Basic URL validation
-            try:
-                result = urlparse(url)
-                if all([result.scheme, result.netloc]):
-                    urls.append(url)
-            except:
-                continue
-                
-        return urls
 
     def generate_followup_topics(self, content: str, query: str, num_topics: int = 3) -> List[Dict]:
         """
-        Generate follow-up research topics based on content
+        Generates follow-up research topics from the accumulated research learnings.
+        The follow-up topics are more specific queries with an associated research goal.
         """
         prompt = f"""
         Given the following content from research about "{query}", generate {num_topics} follow-up research topics.
@@ -156,33 +149,30 @@ class ResearchAssistant:
         1. A specific search query
         2. The research goal explaining what we hope to learn
         
-        Format as:
-        Query: <query>
-        Goal: <research goal>
+        Format as a JSON object with keys 'query' and 'research_goal'.
         """
-        
         response = self.call_claude(prompt)
+        try:
+            topics = json.loads(response)
+            if not isinstance(topics, list):
+                raise ValueError("Expected a list of topics in JSON format")
+            for topic in topics:
+                if 'query' not in topic or 'research_goal' not in topic:
+                    raise ValueError("Each topic must have 'query' and 'research_goal' keys")
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Error decoding JSON from Claude response: {str(e)}")
+            return []
+        except ValueError as e:
+            print(f"[ERROR] Error parsing topics from Claude response: {str(e)}")
+            return []
         
-        # Parse response into structured format
-        topics = []
-        current_topic = {}
-        
-        for line in response.split('\n'):
-            if line.startswith('Query:'):
-                if current_topic:
-                    topics.append(current_topic)
-                current_topic = {'query': line[6:].strip()}
-            elif line.startswith('Goal:'):
-                current_topic['research_goal'] = line[5:].strip()
-                
-        if current_topic:
-            topics.append(current_topic)
-            
+        print(f"[INFO] Generated follow-up topics for '{query}': {topics}")
         return topics[:num_topics]
 
     def extract_learnings(self, content: str) -> List[str]:
         """
-        Extract learning points from Claude's analysis
+        Extracts key learning points from the provided content.
+        It looks for bullet points (lines starting with '*' or '-').
         """
         learnings = []
         for line in content.split('\n'):
@@ -193,37 +183,43 @@ class ResearchAssistant:
                     learnings.append(learning)
         return learnings
 
-    async def research_topic(self, 
-                           query: str, 
-                           depth: int = 2, 
-                           breadth: int = 2,
-                           existing_results: ResearchResult = None) -> ResearchResult:
+    async def research_topic(self, query: str, depth: int = 2, breadth: int = 2,
+                             existing_results: ResearchResult = None) -> ResearchResult:
         """
-        Recursively research a topic with specified depth and breadth
+        Recursively researches a topic:
+          - Searches for content using FireCrawl.
+          - Analyzes the content with Claude to extract key learnings.
+          - If depth permits, generates follow-up topics and recursively researches them.
+          
+        Parameters:
+          - query: The current search query.
+          - depth: How many layers deep the recursion should go.
+          - breadth: How many follow-up topics to generate at each recursion level.
+          - existing_results: Aggregates learnings and visited URLs across recursive calls.
         """
         if existing_results is None:
             existing_results = ResearchResult(learnings=[], visited_urls=[])
             
         if depth <= 0:
             return existing_results
-            
-        # Get search results
+
+        print(f"[INFO] Researching topic: '{query}' at depth: {depth} and breadth: {breadth}")
+        # Get search results for the current query
         results = self.fire_crawl(query)
-        
-        # Process each result separately
         for result in results:
             try:
                 title = result.get("title", "")
                 url = result.get("url", "")
                 content = result.get("markdown", "")
-                
                 if not content:
+                    print(f"[WARNING] No content found for source: {url}")
                     continue
-                    
-                # Add URL to visited list
+
+                print(f"[INFO] Processing source: '{title}' - {url}")
+                # Record the source URL
                 existing_results.visited_urls.append(url)
                 
-                # Analyze single page content
+                # Prepare a prompt to analyze the page content
                 analysis_prompt = f"""
                 Analyze this content about "{query}" from "{title}" and provide key learnings:
                 
@@ -234,34 +230,31 @@ class ResearchAssistant:
                 Include any relevant numbers, dates, names, or technical details.
                 Format each learning as a bullet point starting with *.
                 """
-                
                 analysis = self.call_claude(analysis_prompt)
                 new_learnings = self.extract_learnings(analysis)
+                print(f"[INFO] Extracted learnings from {url}: {new_learnings}")
                 existing_results.learnings.extend(new_learnings)
                 
-                # Add small delay between API calls
+                # Delay to avoid rate limits or overwhelming the API
                 await asyncio.sleep(1)
-                
             except Exception as e:
-                print(f"Error processing result: {str(e)}")
+                print(f"[ERROR] Error processing result from {result.get('url', 'unknown URL')}: {str(e)}")
                 continue
-        
+
+        # If further depth is allowed, generate follow-up topics and research them concurrently
         if depth > 1:
-            # Generate follow-up topics from accumulated learnings
             followup_content = "\n".join(existing_results.learnings)
             followup_topics = self.generate_followup_topics(
                 content=followup_content,
                 query=query,
                 num_topics=breadth
             )
-            
-            # Create thread pool
             executor = ThreadPoolExecutor(max_workers=self.max_concurrent)
             loop = asyncio.get_event_loop()
-            
-            # Research each topic concurrently
             tasks = []
             for topic in followup_topics:
+                # For each follow-up topic, recursively call research_topic in a separate thread
+                print(f"[INFO] Recursively researching follow-up topic: '{topic['query']}' with goal: '{topic.get('research_goal', '')}'")
                 task = loop.run_in_executor(
                     executor,
                     lambda q=topic['query']: asyncio.run(self.research_topic(
@@ -272,14 +265,10 @@ class ResearchAssistant:
                     ))
                 )
                 tasks.append(task)
-                
-            # Wait for all tasks to complete
             await asyncio.gather(*tasks)
-            
-            # Clean up executor
             executor.shutdown(wait=True)
         
-        # Deduplicate results
+        # Deduplicate the learnings and visited URLs
         existing_results.learnings = list(set(existing_results.learnings))
         existing_results.visited_urls = list(set(existing_results.visited_urls))
         
@@ -287,8 +276,13 @@ class ResearchAssistant:
 
     def generate_final_report(self, query: str, results: ResearchResult) -> str:
         """
-        Generate a final report from all research results
+        Generates a comprehensive markdown research report based on the collected learnings.
+        The report includes:
+          - An executive summary.
+          - Logical sections detailing the findings.
+          - A sources section listing all visited URLs.
         """
+        print(f"[INFO] Generating final report using {len(results.learnings)} learnings and {len(results.visited_urls)} sources")
         prompt = f"""
         Create a comprehensive research report on: {query}
 
@@ -303,59 +297,6 @@ class ResearchAssistant:
 
         Use markdown formatting.
         """
-        
         report = self.call_claude(prompt)
-        
-        # Add sources section
-        sources_section = "\n\n## Sources\n\n" + \
-                         "\n".join(f"- {url}" for url in results.visited_urls)
-        
+        sources_section = "\n\n## Sources\n\n" + "\n".join(f"- {url}" for url in results.visited_urls)
         return report + sources_section
-
-async def main():
-    """Example usage of the ResearchAssistant"""
-    
-    anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
-    firecrawl_api_key = os.environ.get("FIRECRAWL_API_KEY")
-    assistant = ResearchAssistant(
-        anthropic_api_key=anthropic_api_key,
-        firecrawl_api_key=firecrawl_api_key
-    )
-    
-    # Example research query
-    query = "quantum computing advantages"
-    
-    print(f"Starting research on: {query}")
-    results = await assistant.research_topic(
-        query=query,
-        depth=2,
-        breadth=2
-    )
-    
-    print(f"\nFound {len(results.learnings)} learnings from {len(results.visited_urls)} sources")
-    
-    print("\nGenerating final report...")
-    report = assistant.generate_final_report(
-        query=query,
-        results=results
-    )
-    
-    # Create reports directory if it doesn't exist
-    os.makedirs('reports', exist_ok=True)
-    
-    # Generate filename based on query and timestamp
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"reports/research_{query.replace(' ', '_')}_{timestamp}.md"
-    
-    # Save report to file
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(report)
-    
-    print(f"\nReport saved to: {filename}")
-    print("\nReport preview:")
-    print("=" * 40)
-    # Print first 500 characters of report
-    print(report[:500] + "...")
-
-if __name__ == "__main__":
-    asyncio.run(main())
