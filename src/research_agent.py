@@ -3,7 +3,8 @@ import requests
 import asyncio
 import re
 import json
-from typing import List, Dict, Optional
+import time
+from typing import List, Dict, Optional, Callable, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -52,86 +53,157 @@ class ResearchAgent:
         self.firecrawlapp = FirecrawlApp(firecrawl_api_key)
         self.chat_contexts: Dict[str, ChatContext] = {}
         self.max_concurrent = 2  # Maximum concurrent research threads
+        self.status_callback: Optional[Callable[[str, Any], None]] = None
 
     def call_claude(self, prompt: str, context_id: Optional[str] = None) -> str:
         """
         Makes a call to the Claude API with the provided prompt.
         If a context_id is given and found, it maintains the conversation history.
+        Includes rate limit handling with exponential backoff.
         """
-        try:
-            # Uncomment the following line to see the prompts sent to Claude
-            # print(f"[DEBUG] Sending prompt to Claude: {prompt[:200]}...")
-            if context_id and context_id in self.chat_contexts:
-                # Continue an existing conversation
-                context = self.chat_contexts[context_id]
-                context.messages.append({
-                    "role": "user",
-                    "content": prompt
-                })
-                response = self.client.messages.create(
-                    model="claude-3-5-haiku-20241022",
-                    messages=context.messages,
-                    max_tokens=4096
-                )
-                context.messages.append({
-                    "role": "assistant",
-                    "content": response.content[0].text
-                })
-                return response.content[0].text
-            else:
-                # Start a new conversation
-                new_context = ChatContext(
-                    messages=[{"role": "user", "content": prompt}],
-                    created_at=datetime.now()
-                )
-                response = self.client.messages.create(
-                    model="claude-3-5-haiku-20241022",
-                    messages=new_context.messages,
-                    max_tokens=4096
-                )
-                new_context.messages.append({
-                    "role": "assistant",
-                    "content": response.content[0].text
-                })
-                if context_id:
-                    self.chat_contexts[context_id] = new_context
-                return response.content[0].text
-        except Exception as e:
-            print(f"Error calling Claude API: {str(e)}")
-            raise
+        max_retries = 5
+        retry_delay = 2  # starting delay in seconds
+        
+        for attempt in range(max_retries):
+            try:
+                # Report status via callback if available
+                if self.status_callback:
+                    self.status_callback("claude_call", prompt[:50] + "...")
+                    
+                # Uncomment the following line to see the prompts sent to Claude
+                # print(f"[DEBUG] Sending prompt to Claude: {prompt[:200]}...")
+                if context_id and context_id in self.chat_contexts:
+                    # Continue an existing conversation
+                    context = self.chat_contexts[context_id]
+                    context.messages.append({
+                        "role": "user",
+                        "content": prompt
+                    })
+                    response = self.client.messages.create(
+                        model="claude-3-5-haiku-20241022",
+                        messages=context.messages,
+                        max_tokens=4096
+                    )
+                    context.messages.append({
+                        "role": "assistant",
+                        "content": response.content[0].text
+                    })
+                    return response.content[0].text
+                else:
+                    # Start a new conversation
+                    new_context = ChatContext(
+                        messages=[{"role": "user", "content": prompt}],
+                        created_at=datetime.now()
+                    )
+                    response = self.client.messages.create(
+                        model="claude-3-5-haiku-20241022",
+                        messages=new_context.messages,
+                        max_tokens=4096
+                    )
+                    new_context.messages.append({
+                        "role": "assistant",
+                        "content": response.content[0].text
+                    })
+                    if context_id:
+                        self.chat_contexts[context_id] = new_context
+                    return response.content[0].text
+                    
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Error calling Claude API (attempt {attempt+1}/{max_retries}): {error_msg}")
+                
+                # Handle rate limit errors with backoff
+                if "rate_limit_error" in error_msg and attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    
+                    # Report status via callback if available
+                    if self.status_callback:
+                        self.status_callback("rate_limit", f"Rate limit reached. Waiting {wait_time}s before retry...")
+                    
+                    print(f"Rate limit reached. Waiting {wait_time} seconds before retrying...")
+                    time.sleep(wait_time)
+                    continue
+                elif attempt < max_retries - 1:
+                    # For other errors, retry with backoff as well
+                    wait_time = retry_delay * (2 ** attempt)
+                    print(f"Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # Last attempt failed, raise the exception
+                    raise
 
     def fire_crawl(self, query: str) -> List[Dict]:
         """
         Uses the FireCrawl API to perform a web search based on the query.
         Returns a list of search results (with title, URL, and markdown content).
+        Includes rate limit handling with exponential backoff.
         """
-        try:
-            url = "https://api.firecrawl.dev/v1/search"
-            payload = {
-                "query": query,
-                "limit": 3,
-                "lang": "en",
-                "country": "us",
-                "timeout": 60000,
-                "scrapeOptions": {
-                    "formats": ["markdown"]
+        max_retries = 5
+        retry_delay = 2  # starting delay in seconds
+        
+        for attempt in range(max_retries):
+            try:
+                # Report status via callback if available
+                if self.status_callback:
+                    self.status_callback("firecrawl_call", f"Searching for '{query}'...")
+                    
+                url = "https://api.firecrawl.dev/v1/search"
+                payload = {
+                    "query": query,
+                    "limit": 3,
+                    "lang": "en",
+                    "country": "us",
+                    "timeout": 60000,
+                    "scrapeOptions": {
+                        "formats": ["markdown"]
+                    }
                 }
-            }
-            headers = {
-                "Authorization": f"Bearer {self.firecrawl_key}",
-                "Content-Type": "application/json"
-            }
-            response = requests.post(url, json=payload, headers=headers)
-            if response.status_code == 200:
-                results = response.json().get("data", [])
-                print(f"[INFO] FireCrawl returned {len(results)} results for query: '{query}'")
-                return results
-            else:
-                print(f"[ERROR] FireCrawl API error: {response.status_code} - {response.text}")
-                return []
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Error calling FireCrawl API: {str(e)}")
-            return []
+                headers = {
+                    "Authorization": f"Bearer {self.firecrawl_key}",
+                    "Content-Type": "application/json"
+                }
+                response = requests.post(url, json=payload, headers=headers)
+                
+                if response.status_code == 200:
+                    results = response.json().get("data", [])
+                    print(f"[INFO] FireCrawl returned {len(results)} results for query: '{query}'")
+                    return results
+                elif response.status_code == 429 and attempt < max_retries - 1:
+                    # Handle rate limit
+                    wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    
+                    # Report status via callback if available
+                    if self.status_callback:
+                        self.status_callback("rate_limit", f"FireCrawl rate limit reached. Waiting {wait_time}s before retry...")
+                    
+                    print(f"[WARN] FireCrawl rate limit reached. Waiting {wait_time} seconds before retrying...")
+                    time.sleep(wait_time)
+                    continue
+                elif attempt < max_retries - 1:
+                    # For other errors, retry with backoff
+                    wait_time = retry_delay * (2 ** attempt)
+                    print(f"[WARN] FireCrawl API error: {response.status_code} - {response.text}. Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # Last attempt failed
+                    print(f"[ERROR] FireCrawl API error: {response.status_code} - {response.text}")
+                    return []
+                    
+            except requests.exceptions.RequestException as e:
+                error_msg = str(e)
+                print(f"[ERROR] Error calling FireCrawl API (attempt {attempt+1}/{max_retries}): {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    # Retry with backoff
+                    wait_time = retry_delay * (2 ** attempt)
+                    print(f"[INFO] Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # Last attempt failed
+                    return []
 
     def generate_followup_topics(self, content: str, query: str, num_topics: int = 3) -> List[Dict]:
         """
@@ -204,6 +276,10 @@ class ResearchAgent:
             return existing_results
 
         print(f"[INFO] Researching topic: '{query}' at depth: {depth} and breadth: {breadth}")
+        # Report status via callback if available
+        if self.status_callback:
+            self.status_callback("research_start", query)
+            
         # Get search results for the current query
         results = self.fire_crawl(query)
         for result in results:
@@ -216,6 +292,10 @@ class ResearchAgent:
                     continue
 
                 print(f"[INFO] Processing source: '{title}' - {url}")
+                # Report source processing status
+                if self.status_callback:
+                    self.status_callback("source_processing", (title, url))
+                    
                 # Record the source URL
                 existing_results.visited_urls.append(url)
                 
@@ -233,6 +313,12 @@ class ResearchAgent:
                 analysis = self.call_claude(analysis_prompt)
                 new_learnings = self.extract_learnings(analysis)
                 print(f"[INFO] Extracted learnings from {url}: {new_learnings}")
+                
+                # Report new learnings via callback
+                if self.status_callback:
+                    for learning in new_learnings:
+                        self.status_callback("new_learning", learning)
+                
                 existing_results.learnings.extend(new_learnings)
                 
                 # Delay to avoid rate limits or overwhelming the API
@@ -255,6 +341,11 @@ class ResearchAgent:
             for topic in followup_topics:
                 # For each follow-up topic, recursively call research_topic in a separate thread
                 print(f"[INFO] Recursively researching follow-up topic: '{topic['query']}' with goal: '{topic.get('research_goal', '')}'")
+                
+                # Report followup topic via callback
+                if self.status_callback:
+                    self.status_callback("followup_topic", topic['query'])
+                    
                 task = loop.run_in_executor(
                     executor,
                     lambda q=topic['query']: asyncio.run(self.research_topic(
@@ -283,6 +374,11 @@ class ResearchAgent:
           - A sources section listing all visited URLs.
         """
         print(f"[INFO] Generating final report using {len(results.learnings)} learnings and {len(results.visited_urls)} sources")
+        
+        # Notify about report generation
+        if self.status_callback:
+            self.status_callback("generating_report", f"Creating report with {len(results.learnings)} learnings")
+            
         prompt = f"""
         Create a comprehensive research report on: {query}
 
@@ -305,6 +401,10 @@ class ResearchAgent:
         """
         Performs a simpler non-recursive search for quick responses
         """
+        # Report status
+        if self.status_callback:
+            self.status_callback("research_start", query)
+            
         # Get search results for the query
         results = self.fire_crawl(query)
         content = ""
@@ -315,6 +415,10 @@ class ResearchAgent:
             url = result.get("url", "")
             md_content = result.get("markdown", "")
             
+            # Report source processing
+            if self.status_callback:
+                self.status_callback("source_processing", (title, url))
+                
             if md_content:
                 content += f"\n\n## {title}\n\n{md_content}"
                 urls.append(url)
