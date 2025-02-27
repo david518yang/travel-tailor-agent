@@ -1,74 +1,91 @@
 import os
+import asyncio
 from dotenv import load_dotenv
-from datetime import date
+from datetime import datetime
 import streamlit as st
-import firecrawl
-from llm import call_claude
+from research_agent import ResearchAgent
 
-
+# Load environment variables
 load_dotenv()
+anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+firecrawl_api_key = os.environ.get("FIRECRAWL_API_KEY")
 
+# Initialize the research agent
+@st.cache_resource
+def get_research_agent():
+    return ResearchAgent(
+        anthropic_api_key=anthropic_api_key,
+        firecrawl_api_key=firecrawl_api_key
+    )
+
+# Set up the Streamlit UI
 st.title("AI Research Agent")
+st.markdown("""
+This tool helps you research topics by gathering information from the web and using AI to analyze it.
+""")
 
-user_query = st.text_input("Enter your question or topic:")
+# Research input section
+st.header("Research a Topic")
+research_query = st.text_input("Enter a research topic:")
+col1, col2 = st.columns(2)
+with col1:
+    depth = st.slider("Research Depth", min_value=1, max_value=3, value=2, 
+                      help="How deep to go with follow-up topics")
+with col2:
+    breadth = st.slider("Research Breadth", min_value=1, max_value=3, value=2,
+                       help="Number of follow-up topics to explore at each level")
 
+research_mode = st.radio("Research Mode", ["Quick", "Comprehensive"], 
+                         help="Quick gives a faster response, Comprehensive does a deeper analysis")
 
-
-
-if st.button("Get AI Response"):
-    if not user_query:
-        st.warning("Please enter a query first!")
+if st.button("Start Research"):
+    if not research_query:
+        st.warning("Please enter a research topic first!")
     else:
-        ai_response = None
-        now = date.today()
-        topic_generator_sys_prompt = """
-You are an expert researcher. Today is ${now}. Follow these instructions when responding:
-  - You may be asked to research subjects that is after your knowledge cutoff, assume the user is right when presented with news.
-  - The user is a highly experienced analyst, no need to simplify it, be as detailed as possible and make sure your response is correct.
-  - Be highly organized.
-  - Suggest solutions that I didn't think about.
-  - Be proactive and anticipate my needs.
-  - Treat me as an expert in all subject matter.
-  - Mistakes erode my trust, so be accurate and thorough.
-  - Provide detailed explanations, I'm comfortable with lots of detail.
-  - Value good arguments over authorities, the source is irrelevant.
-  - Consider new technologies and contrarian ideas, not just the conventional wisdom.
-  - You may use high levels of speculation or prediction, just flag it for me.
-"""
-        try:
-            ai_response = call_claude(topic_generator_sys_prompt, user_query)
-        except Exception as e:
-            st.error(f"Error calling Claude API: {e}")
-
-        if ai_response:
-            st.success("AI Response:")
-            st.write(ai_response)
-
-
-# 6. Example function to demonstrate a crawl
-st.write("Web Crawling Demo")
-crawl_url = st.text_input("Enter a URL to crawl:")
-if st.button("Crawl Website"):
-    if not crawl_url:
-        st.warning("Please enter a URL!")
-    else:
-        try:
-            results = basic_crawl(crawl_url)
-            st.write("Crawl Results:")
-            st.write(results)
-        except Exception as e:
-            st.error(f"Error during crawl: {e}")
+        agent = get_research_agent()
         
+        with st.spinner(f"Researching '{research_query}'. This may take a few minutes..."):
+            try:
+                if research_mode == "Quick":
+                    # Use the simple research method for quick results
+                    result = agent.simple_research(research_query)
+                    st.markdown(result)
+                else:
+                    # Use async for comprehensive research
+                    async def run_research():
+                        results = await agent.research_topic(
+                            query=research_query,
+                            depth=depth,
+                            breadth=breadth
+                        )
+                        report = agent.generate_final_report(
+                            query=research_query,
+                            results=results
+                        )
+                        return report, results
+                    
+                    # Run the async research 
+                    report, results = asyncio.run(run_research())
+                    
+                    # Display results
+                    st.markdown(report)
+                    
+                    # Option to save the report
+                    if st.button("Save Report"):
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        filename = f"reports/research_{research_query.replace(' ', '_')}_{timestamp}.md"
+                        os.makedirs('reports', exist_ok=True)
+                        with open(filename, 'w', encoding='utf-8') as f:
+                            f.write(report)
+                        st.success(f"Report saved to {filename}")
+                        
+            except Exception as e:
+                st.error(f"Error during research: {str(e)}")
 
-
-
-def basic_crawl(url: str) -> str:
-    """
-    Example function using 'firecrawl'. 
-    Adjust to match the actual usage of the library if it differs.
-    """
-    # This is a placeholder. Actual usage of 'firecrawl' depends on that library’s docs.
-    crawler = firecrawl.Crawler()
-    result = crawler.crawl(url)
-    # Return some text/summary from the crawled content
-    return f"Crawled {url}, found {len(result)} results."
+# Add information about the tool
+st.sidebar.title("About")
+st.sidebar.info("""
+This research agent uses Claude AI from Anthropic and FireCrawl for web search 
+to help you research topics thoroughly. It can explore multiple aspects
+of a topic and create detailed reports with sources.
+""")

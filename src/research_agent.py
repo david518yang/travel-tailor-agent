@@ -184,7 +184,7 @@ class ResearchAgent:
         return learnings
 
     async def research_topic(self, query: str, depth: int = 2, breadth: int = 2,
-                             existing_results: ResearchResult = None) -> ResearchResult:
+                         existing_results: ResearchResult = None) -> ResearchResult:
         """
         Recursively researches a topic:
           - Searches for content using FireCrawl.
@@ -300,3 +300,42 @@ class ResearchAgent:
         report = self.call_claude(prompt)
         sources_section = "\n\n## Sources\n\n" + "\n".join(f"- {url}" for url in results.visited_urls)
         return report + sources_section
+
+    def simple_research(self, query: str) -> str:
+        """
+        Performs a simpler non-recursive search for quick responses
+        """
+        # Get search results for the query
+        results = self.fire_crawl(query)
+        content = ""
+        urls = []
+        
+        for result in results:
+            title = result.get("title", "")
+            url = result.get("url", "")
+            md_content = result.get("markdown", "")
+            
+            if md_content:
+                content += f"\n\n## {title}\n\n{md_content}"
+                urls.append(url)
+                
+        if not content:
+            return "Couldn't find relevant information on this topic."
+            
+        prompt = f"""
+        Based on the following research materials about "{query}", provide a concise summary:
+        
+        {content}
+        
+        Your response should be well-structured with:
+        1. Key findings and insights
+        2. Important details
+        3. A brief conclusion
+        
+        Use markdown formatting.
+        """
+        
+        response = self.call_claude(prompt)
+        sources = "\n\n## Sources\n\n" + "\n".join(f"- {url}" for url in urls)
+        
+        return response + sources
