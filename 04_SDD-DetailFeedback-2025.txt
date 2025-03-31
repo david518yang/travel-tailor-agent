@@ -1,0 +1,40 @@
+
+New Individual Project
+Documentation Feedback ~ Deliverable #4
+Software Design Document ~ Detailed Design
+CMSI 4072 Spring 2025
+==========================================
+
+DETAILED CSC AND CSU DESCRIPTIONS:
+   Not done.
+
+DETAILED CLASS DESCRIPTIONS:
+   Not done.
+
+DETAILED INTERFACE DESCRIPTIONS:
+   Not done.
+
+DETAILED DATA STRUCTURE DESCRIPTIONS:
+   Not done.
+
+DETAILED DESIGN DIAGRAMS:
+   Not done.
+
+DATABASE DESIGN AND DESCRIPTION:
+   Not done.
+
+----------------------------------------------
+OVERALL ASSESSMENT:
+   Category                          Points
+   CSC/CSU Descriptions:                0 of  2
+   Class Descriptions:                  0 of  3
+   Interface Descriptions:              0 of  3
+   Data structure Descriptions:         0 of  1
+   Design diagrams:                     0 of  4
+   Database design/descriptions:        0 of  2
+                                     ===========
+   Subtotal                             0 of 15
+   ------------------------------------------------------
+   Total Percentage:  0/15 = 0% which is an F on this deliverable
+
+I can't evaluate what isn't there.
