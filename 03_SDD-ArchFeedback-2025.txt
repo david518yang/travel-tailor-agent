@@ -1,0 +1,37 @@
+
+New Individual Project
+Documentation Feedback ~ Deliverable #3
+Software Design Document ~ Architecture
+CMSI 4072 Spring 2025
+=======================================
+
+SDD: ARCHITECTURAL DESIGN SECTION:
+   Major software components section
+   Deliverable not submitted.
+
+   Major software interactions section
+   Deliverable not submitted.
+
+   Architectural design diagrams section
+   Deliverable not submitted.
+
+OVERALL ASSESSMENT:
+   Category                           Points
+   --------------------------------   -------
+   ARCHITECTURAL DESIGN SECTION:
+   Major software components            0 / 2
+   Major software interactions          0 / 2
+   Architectural design diagrams        0 / 6
+                                      =======
+   Subtotal                             0 /10
+   ------------------------------------------------------
+   Total Percentage:  0/10 = 0% which is an F on this deliverable
+
+============================================================================
+COMMENTS:
+---------
+
+I can't evaluate what isn't there.  Put something together for the detailed
+design deliverable and submit it with deliverable #4 to get at least partial
+credit.
+
