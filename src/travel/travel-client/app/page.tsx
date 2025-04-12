@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Card, CardHeader, CardContent } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { ChatMessageList } from "../components/ui/chat/chat-message-list";
@@ -15,7 +15,15 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "../components/ui/collapsible";
-import { ChevronsUpDown, Wind, Droplets } from "lucide-react";
+import {
+  ChevronsUpDown,
+  Wind,
+  Droplets,
+  PlaneTakeoff,
+  Sparkles,
+  Info,
+  SendHorizontal,
+} from "lucide-react";
 import { TravelRequest } from "../lib/claude";
 import { ScrollArea, ScrollBar } from "../components/ui/scroll-area";
 
@@ -110,6 +118,49 @@ const capitalizeCityName = (name: string): string => {
     .split(" ")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+};
+
+// --- Normalization Data & Function ---
+const cityNameVariations: Record<string, string> = {
+  // USA
+  nyc: "new york",
+  "new york city": "new york",
+  la: "los angeles",
+  lax: "los angeles", // Sometimes users might use codes
+  chi: "chicago",
+  ord: "chicago",
+  sf: "san francisco",
+  sfo: "san francisco",
+  vegas: "las vegas",
+  dca: "washington",
+  iad: "washington",
+  bwi: "washington", // Close enough for context
+  // Europe
+  cdg: "paris",
+  lhr: "london",
+  lgw: "london",
+  fco: "rome",
+  ams: "amsterdam",
+  mad: "madrid",
+  bcn: "barcelona",
+  ber: "berlin",
+  muc: "munich",
+  // Asia
+  nrt: "tokyo",
+  hnd: "tokyo",
+  icn: "seoul",
+  pek: "beijing",
+  pvg: "shanghai",
+  hkg: "hong kong",
+  sin: "singapore",
+  bkk: "bangkok",
+  // Add more common variations as needed
+};
+
+const normalizeCityName = (city: string): string => {
+  if (!city || city === "unknown") return city;
+  const lowerCity = city.toLowerCase().trim();
+  return cityNameVariations[lowerCity] || lowerCity; // Return mapped name or original lowercased name
 };
 
 const FlightCard = ({ flight }: { flight: Flight }) => {
@@ -260,7 +311,7 @@ const FlightCard = ({ flight }: { flight: Flight }) => {
                   size="sm"
                   className="w-full justify-center h-7 text-xs text-blue-700 border-blue-200 hover:bg-blue-50"
                 >
-                  View Full Itinerary ({segments.length - 1} more stop
+                  View Full Itinerary
                   {segments.length - 1 > 1 ? "s" : ""})
                   <ChevronsUpDown className="h-3 w-3 ml-1" />
                 </Button>
@@ -289,6 +340,33 @@ export default function Home() {
   );
   const [waitingForFields, setWaitingForFields] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [chatMode, setChatMode] = useState<"gathering" | "general_qa">(
+    "gathering"
+  );
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const lastMessageRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // --- Effect for Auto-Scrolling - Reverting to scrollTop + increased padding ---
+  useEffect(() => {
+    // Log the ref to ensure it's pointing to the element
+    console.log(
+      "[AutoScroll] Effect triggered. Scroll container ref:",
+      scrollContainerRef.current
+    );
+    if (scrollContainerRef.current) {
+      const scrollElement = scrollContainerRef.current;
+      // Add a very small delay to allow DOM to update fully
+      setTimeout(() => {
+        console.log(
+          `[AutoScroll] Setting scrollTop: current=${scrollElement.scrollTop}, scrollHeight=${scrollElement.scrollHeight}`
+        );
+        scrollElement.scrollTop = scrollElement.scrollHeight;
+        console.log(`[AutoScroll] New scrollTop=${scrollElement.scrollTop}`);
+      }, 0); // setTimeout with 0ms delay
+    }
+  }, [messages]);
 
   const missingFields = (): string[] => {
     const missing: string[] = [];
@@ -344,8 +422,21 @@ export default function Home() {
         if (!(field in data))
           throw new Error(`Missing required field: ${field}`);
       }
-      setTravelDetails(data);
-      return data;
+
+      // Normalize city names before setting state
+      const normalizedData: TravelRequest = {
+        ...data,
+        origin: normalizeCityName(data.origin),
+        destination: normalizeCityName(data.destination),
+      };
+      console.log(
+        "[Client Parse] Original vs Normalized Cities:",
+        { O_orig: data.origin, D_orig: data.destination },
+        { O_norm: normalizedData.origin, D_norm: normalizedData.destination }
+      );
+
+      setTravelDetails(normalizedData); // Set state with normalized data
+      return normalizedData; // Return normalized data
     } catch (error: any) {
       console.error("Error parsing travel request:", error);
       setMessages((prev) => [
@@ -392,7 +483,21 @@ export default function Home() {
         if (!(field in data))
           throw new Error(`Missing required field: ${field}`);
       }
-      return data;
+
+      // Normalize city names before returning
+      const normalizedData: TravelRequest = {
+        ...data,
+        origin: normalizeCityName(data.origin),
+        destination: normalizeCityName(data.destination),
+      };
+      console.log(
+        "[Client Update] Original vs Normalized Cities:",
+        { O_orig: data.origin, D_orig: data.destination },
+        { O_norm: normalizedData.origin, D_norm: normalizedData.destination }
+      );
+
+      // Note: We setTravelDetails *after* this returns in handleSend
+      return normalizedData; // Return normalized data
     } catch (error: any) {
       console.error("Error updating travel details:", error);
       setMessages((prev) => [
@@ -527,160 +632,297 @@ export default function Home() {
   };
 
   const processTravelInfo = async (details: TravelRequest) => {
-    const processingMsg: Message = {
+    setIsLoading(true);
+    const loadingId = `loading-results-${Date.now()}`;
+    const loadingMessage: Message = {
+      id: loadingId,
       role: "assistant",
-      content:
-        "Thanks for providing your travel details! Searching for flights and checking weather...",
+      content: "Thanks! Looking up flights and weather for you now...",
     };
-    setMessages((prev) => [...prev, processingMsg]);
-    await fetchFlights(details);
-    await fetchWeather(details);
-  };
-
-  const handleSend = async () => {
-    if (!input.trim()) return;
-    const userMsg: Message = { role: "user", content: input };
-    setMessages((prev) => [...prev, userMsg]);
-    setInput("");
+    setMessages((prev) => [...prev, loadingMessage]);
 
     try {
-      if (waitingForFields) {
-        try {
-          const before = Object.entries(travelDetails)
-            .filter(([_, value]) => value === "unknown")
-            .map(([key]) => key);
-          console.log("Fields unknown BEFORE update:", before);
-
-          const updated = await updateMissingFields(input, travelDetails);
-
-          setTravelDetails(updated);
-
-          const after = Object.entries(updated)
-            .filter(([_, value]) => value === "unknown")
-            .map(([key]) => key);
-          console.log("Fields unknown AFTER update:", after);
-
-          const stillMissing = after.map((key) => {
-            switch (key) {
-              case "start_date":
-                return "start date";
-              case "end_date":
-                return "end date";
-              case "origin":
-                return "departure city";
-              case "destination":
-                return "destination";
-              default:
-                return key;
-            }
-          });
-
-          if (stillMissing.length > 0) {
-            const missingMsg: Message = {
-              role: "assistant",
-              content: getMissingFieldsPrompt(stillMissing),
-            };
-            setMessages((prev) => [...prev, missingMsg]);
-          } else {
-            setWaitingForFields(false);
-            await processTravelInfo(updated);
-          }
-        } catch (error) {}
-      } else {
-        try {
-          const parsed = await parseTravelRequest(input);
-          setTravelDetails(parsed);
-
-          const unknown = Object.entries(parsed)
-            .filter(([_, value]) => value === "unknown")
-            .map(([key]) => key);
-          console.log("Fields still unknown after parsing:", unknown);
-
-          const missing = unknown.map((key) => {
-            switch (key) {
-              case "start_date":
-                return "start date";
-              case "end_date":
-                return "end date";
-              case "origin":
-                return "departure city";
-              case "destination":
-                return "destination";
-              default:
-                return key;
-            }
-          });
-
-          if (missing.length > 0) {
-            setWaitingForFields(true);
-            const needMsg: Message = {
-              role: "assistant",
-              content: getMissingFieldsPrompt(missing),
-            };
-            setMessages((prev) => [...prev, needMsg]);
-          } else {
-            await processTravelInfo(parsed);
-          }
-        } catch (error) {}
-      }
+      await Promise.all([fetchFlights(details), fetchWeather(details)]);
+      // Add follow-up message after results are added by fetch functions
+      const followUpMessage: Message = {
+        role: "assistant",
+        content: `Okay, I've found flights and weather info for ${capitalizeCityName(
+          details.destination
+        )}. Let me know if you want to know anything else about the destination!`,
+      };
+      // Use setTimeout to ensure it appears after flight/weather messages
+      setTimeout(() => {
+        setMessages((prev) => [
+          ...prev.filter((msg) => msg.id !== loadingId),
+          followUpMessage,
+        ]); // Remove loading & add follow-up
+        setChatMode("general_qa"); // <-- Transition mode
+        setIsLoading(false);
+      }, 100); // Small delay to allow state updates from fetches
     } catch (error) {
-      console.error("Unexpected error in message handling:", error);
+      console.error("Error processing travel info fetches:", error);
+      setMessages((prev) => [
+        ...prev.filter((msg) => msg.id !== loadingId),
+        {
+          role: "assistant",
+          content: "Sorry, there was an error getting the travel details.",
+        },
+      ]);
+      setIsLoading(false);
+    }
+    // Removed finally block as state is set within try/catch
+  };
+
+  // --- New function: handleGeneralQuery ---
+  const handleGeneralQuery = async (query: string, destination: string) => {
+    if (!destination || destination === "unknown") {
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
           content:
-            "Sorry, I encountered an unexpected error. Please try again.",
+            "I need a destination before I can answer questions about it.",
         },
       ]);
+      return;
     }
+
+    setIsLoading(true);
+    const loadingId = `loading-query-${Date.now()}`;
+    const loadingMessage: Message = {
+      id: loadingId,
+      role: "assistant",
+      content: "Thinking...",
+    };
+    setMessages((prev) => [...prev, loadingMessage]);
+
+    try {
+      const response = await fetch("/api/general_query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, destination }),
+      });
+
+      setMessages((prev) => prev.filter((msg) => msg.id !== loadingId)); // Remove loading
+
+      const data = await response.json(); // Try parsing JSON regardless of status first
+      console.log("[Client Query] Parsed Response:", data);
+
+      if (!response.ok) {
+        // Use error from JSON if available, otherwise use status text
+        throw new Error(
+          data.error || `Request failed with status ${response.status}`
+        );
+      }
+
+      // Check if the expected 'answer' field is present
+      if (typeof data.answer !== "string") {
+        console.error(
+          "[Client Query] Invalid response format, missing 'answer':",
+          data
+        );
+        throw new Error("Received an invalid response from the server.");
+      }
+
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: data.answer },
+      ]);
+    } catch (error: any) {
+      console.error("Error handling general query:", error);
+      // Make sure loading message is removed even if parsing response.json() fails
+      setMessages((prev) => prev.filter((msg) => msg.id !== loadingId));
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `Sorry, I couldn't answer that: ${error.message}`,
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // --- Updated handleSend ---
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
+    const userMsg: Message = { role: "user", content: input };
+    setMessages((prev) => [...prev, userMsg]);
+    const currentInput = input;
+    setInput("");
+
+    // Branch based on chat mode
+    if (chatMode === "gathering") {
+      // --- Gathering Mode Logic ---
+      try {
+        if (waitingForFields) {
+          try {
+            const updated = await updateMissingFields(
+              currentInput,
+              travelDetails
+            );
+            setTravelDetails(updated);
+            const stillMissing = Object.entries(updated)
+              .filter(([_, value]) => value === "unknown")
+              .map(([key]) => {
+                switch (key) {
+                  case "start_date":
+                    return "start date";
+                  case "end_date":
+                    return "end date";
+                  case "origin":
+                    return "departure city";
+                  case "destination":
+                    return "destination";
+                  default:
+                    return key;
+                }
+              });
+
+            if (stillMissing.length > 0) {
+              const missingMsg: Message = {
+                role: "assistant",
+                content: getMissingFieldsPrompt(stillMissing),
+              };
+              setMessages((prev) => [...prev, missingMsg]);
+            } else {
+              setWaitingForFields(false);
+              await processTravelInfo(updated); // Process & transition mode
+            }
+          } catch (error) {
+            /* Handled in updateMissingFields */
+          }
+        } else {
+          try {
+            const parsed = await parseTravelRequest(currentInput);
+            // travelDetails set inside parseTravelRequest
+            const unknown = Object.entries(parsed)
+              .filter(([_, value]) => value === "unknown")
+              .map(([key]) => {
+                switch (key) {
+                  case "start_date":
+                    return "start date";
+                  case "end_date":
+                    return "end date";
+                  case "origin":
+                    return "departure city";
+                  case "destination":
+                    return "destination";
+                  default:
+                    return key;
+                }
+              });
+
+            if (unknown.length > 0) {
+              setWaitingForFields(true);
+              const needMsg: Message = {
+                role: "assistant",
+                content: getMissingFieldsPrompt(unknown),
+              };
+              setMessages((prev) => [...prev, needMsg]);
+            } else {
+              await processTravelInfo(parsed); // Process & transition mode
+            }
+          } catch (error) {
+            /* Handled in parseTravelRequest */
+          }
+        }
+      } catch (error) {
+        console.error("Unexpected error in gathering mode:", error);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "An unexpected error occurred. Please try again.",
+          },
+        ]);
+        setIsLoading(false); // Ensure loading stops
+      }
+    } else {
+      // --- General QA Mode Logic ---
+      await handleGeneralQuery(currentInput, travelDetails.destination);
+    }
+  };
+
+  // --- New Handler for Example Prompts ---
+  const handleExamplePromptClick = (promptText: string) => {
+    setInput(promptText);
+    // Optional: Focus the input field after setting value
+    inputRef.current?.focus();
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 to-gray-100 flex flex-col">
       {/* Header */}
-      <header className="bg-white shadow-sm py-4 px-6 border-b border-blue-100">
-        <h1 className="text-xl font-semibold text-blue-800 flex items-center">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-6 w-6 mr-2 text-blue-600"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-            />
-          </svg>
+      <header className="bg-white shadow-sm py-3 px-6 border-b border-gray-200 sticky top-0 z-10">
+        <h1 className="text-xl font-semibold text-gray-800 flex items-center">
+          <PlaneTakeoff
+            className="h-5 w-5 mr-2.5 text-blue-600"
+            strokeWidth={2}
+          />
           Travel Assistant
         </h1>
       </header>
 
-      {/* Chat messages area */}
-      <div className="flex-1 overflow-auto p-4 md:p-6 space-y-4">
-        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-4">
-          <ChatMessageList>
+      {/* Chat messages area - Fixed height calculation */}
+      <div
+        ref={scrollContainerRef}
+        className="h-[calc(100vh-8rem)] overflow-y-auto px-4 md:px-6 pt-4 md:pt-6"
+      >
+        <div className="max-w-4xl mx-auto">
+          <ChatMessageList className="space-y-4">
             {messages.length === 0 ? (
-              <div className="p-8 text-center text-gray-500">
-                <p className="mb-4">
-                  Welcome to your personal travel assistant!
-                </p>
-                <p>
-                  Tell me about your travel plans (e.g., "flights from New York
-                  to Paris from June 1st to June 10th").
-                </p>
-              </div>
+              <ChatBubble
+                key="welcome"
+                variant={"received"}
+                ref={lastMessageRef}
+              >
+                <ChatBubbleAvatar fallback="AI" />
+                <ChatBubbleMessage variant={"received"}>
+                  <div className="space-y-3">
+                    <h2 className="text-lg font-semibold flex items-center">
+                      <Sparkles className="w-5 h-5 mr-2 text-yellow-500" />
+                      Welcome! How can I help plan your trip?
+                    </h2>
+                    <p className="text-sm text-gray-600">
+                      I can find flights, check weather forecasts (or typical
+                      conditions), and answer questions about your destination.
+                    </p>
+                    <div>
+                      <h3 className="text-sm font-medium mb-1.5 text-gray-700">
+                        Try asking:
+                      </h3>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        {[
+                          "Flights from SF to Paris in early June",
+                          "Weather in Rome next week",
+                          "Recommend things to do in Tokyo",
+                        ].map((prompt) => (
+                          <button
+                            key={prompt}
+                            onClick={() => handleExamplePromptClick(prompt)}
+                            className="text-left text-sm bg-blue-50 hover:bg-blue-100 text-blue-800 px-3 py-1.5 rounded-md transition-colors duration-150 cursor-pointer border border-blue-100"
+                          >
+                            &rarr; {prompt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </ChatBubbleMessage>
+              </ChatBubble>
             ) : (
               messages.map((msg, idx) => {
-                // If it's a text message, render the standard bubble
+                const isLastMessage = idx === messages.length - 1;
+
+                // If it's a text message
                 if (msg.content) {
                   return (
                     <ChatBubble
                       key={msg.id || idx}
                       variant={msg.role === "user" ? "sent" : "received"}
+                      ref={isLastMessage ? lastMessageRef : null}
                     >
                       <ChatBubbleAvatar
                         fallback={msg.role === "user" ? "Me" : "AI"}
@@ -694,31 +936,24 @@ export default function Home() {
                   );
                 }
 
-                // If it's a flight or weather message, render it directly without the bubble message wrapper
+                // If it's a flight or weather message
                 if (msg.flights || msg.weather) {
                   return (
                     <div
                       key={msg.id || idx}
                       className="flex items-start space-x-3 w-full my-3"
+                      ref={isLastMessage ? lastMessageRef : null}
                     >
-                      {" "}
-                      {/* Outer container with avatar alignment */}
                       <ChatBubbleAvatar fallback="AI" />
                       <div className="flex-1 overflow-hidden">
-                        {" "}
-                        {/* Container for the actual content */}
                         {msg.flights && (
                           <div className="mt-1">
-                            {" "}
-                            {/* Adjusted margin slightly */}
-                            {/* Departing Flights Title - Apply capitalization */}
                             <h3 className="text-md font-semibold mb-2 text-blue-700 flex items-center">
                               <span className="mr-2">🛫</span>
                               Departing Flights:{" "}
                               {capitalizeCityName(msg.flights.origin)} to{" "}
                               {capitalizeCityName(msg.flights.destination)}
                             </h3>
-                            {/* Departing Flights Grid */}
                             {msg.flights.departingFlights.length > 0 ? (
                               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                                 {msg.flights.departingFlights.map((flight) => (
@@ -733,10 +968,8 @@ export default function Home() {
                                 No departing flights found.
                               </p>
                             )}
-                            {/* Returning Flights Section (Conditional) */}
                             {msg.flights.hasReturn && (
                               <>
-                                {/* Returning Flights Title - Apply capitalization */}
                                 <h3 className="text-md font-semibold mt-4 mb-2 text-blue-700 flex items-center">
                                   <span className="mr-2">🛬</span>
                                   Returning Flights:{" "}
@@ -745,7 +978,6 @@ export default function Home() {
                                   )}{" "}
                                   to {capitalizeCityName(msg.flights.origin)}
                                 </h3>
-                                {/* Returning Flights Grid */}
                                 {msg.flights.returningFlights.length > 0 ? (
                                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                                     {msg.flights.returningFlights.map(
@@ -768,7 +1000,6 @@ export default function Home() {
                         )}
                         {msg.weather && (
                           <div className="mt-1 space-y-2">
-                            {" "}
                             <Card className="rounded-lg border border-orange-200 shadow-sm overflow-hidden bg-white transition-all duration-200 hover:shadow-md">
                               <CardHeader className="p-0">
                                 <div className=" text-orange-900 font-semibold px-4 py-0 text-lg leading-tight flex items-center">
@@ -800,11 +1031,9 @@ export default function Home() {
                                 </p>
                               </CardContent>
                             </Card>
-                            {/* Updated: Forecast Weather Section (Conditional) */}
                             {msg.weather.forecasts &&
                               msg.weather.forecasts.length > 0 && (
                                 <div>
-                                  {/* Forecast Title */}
                                   <h3 className="text-md font-semibold mb-2 text-blue-700 flex items-center">
                                     <svg
                                       xmlns="http://www.w3.org/2000/svg"
@@ -825,7 +1054,6 @@ export default function Home() {
                                       msg.weather.destination
                                     )}
                                   </h3>
-                                  {/* Scrollable Forecast Cards Area */}
                                   <ScrollArea className="w-full whitespace-nowrap pb-3">
                                     <div className="flex w-max space-x-2 p-1">
                                       {msg.weather.forecasts.map(
@@ -861,7 +1089,6 @@ export default function Home() {
                                                 </div>
                                               </CardHeader>
                                               <CardContent className="p-1.5 space-y-0.5 text-sm">
-                                                {/* Temperatures - Inline Hi/Lo */}
                                                 <div className="text-center font-semibold mb-0.5">
                                                   <span className="text-lg text-gray-800">
                                                     {maxTemp}°
@@ -876,7 +1103,6 @@ export default function Home() {
                                                     F
                                                   </span>
                                                 </div>
-                                                {/* Wind */}
                                                 <div className="flex justify-between items-center text-xs">
                                                   <span className="text-gray-500 flex items-center">
                                                     <Wind className="w-3 h-3 mr-1 text-gray-400" />
@@ -886,7 +1112,6 @@ export default function Home() {
                                                     {windSpeed} mph
                                                   </span>
                                                 </div>
-                                                {/* Precipitation */}
                                                 <div className="flex justify-between items-center text-xs">
                                                   <span className="text-gray-500 flex items-center">
                                                     <Droplets className="w-3 h-3 mr-1 text-blue-400" />
@@ -913,7 +1138,6 @@ export default function Home() {
                   );
                 }
 
-                // Return null or an empty fragment if the message type is somehow unexpected
                 return null;
               })
             )}
@@ -921,17 +1145,33 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Chat input area */}
-      <div className="border-t border-blue-100 p-4 bg-white sticky bottom-0 shadow-md">
-        <ChatInput
-          placeholder="Tell me about your travel plans..."
-          value={input}
-          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
-            setInput(e.target.value)
-          }
-          onSend={handleSend}
-          className="bg-white rounded-lg border-blue-200 focus:border-blue-400 shadow-sm"
-        />
+      {/* Chat input area - Fixed at bottom */}
+      <div className="h-20 border-t border-gray-200 bg-white">
+        <div className="max-w-4xl mx-auto px-4 md:px-6 py-3">
+          <div className="flex items-center gap-2">
+            <ChatInput
+              ref={inputRef}
+              placeholder="Ask about flights, weather, or your destination..."
+              value={input}
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                setInput(e.target.value)
+              }
+              onSend={handleSend}
+              disabled={isLoading}
+              className="flex-1 bg-white rounded-lg border-gray-300 focus:border-blue-400 shadow-sm resize-none"
+            />
+            <Button
+              type="button"
+              size="icon"
+              onClick={handleSend}
+              disabled={isLoading || !input.trim()}
+              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
+            >
+              <SendHorizontal className="h-5 w-5" />
+              <span className="sr-only">Send message</span>
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );
