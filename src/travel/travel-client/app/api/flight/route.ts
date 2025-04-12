@@ -8,6 +8,7 @@ const cityToAirportCode: Record<string, string> = {
   la: "LAX",
   chicago: "ORD",
   "san francisco": "SFO",
+  sf: "SFO",
   dallas: "DFW",
   miami: "MIA",
   atlanta: "ATL",
@@ -136,9 +137,11 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  console.log("--- Flight API Request Received ---");
   try {
+    // Expecting flight search parameters
     const { origin, destination, date, returnDate } = await request.json();
-    console.log("Flight search request:", {
+    console.log("[Flight API] Request Body:", {
       origin,
       destination,
       date,
@@ -149,7 +152,7 @@ export async function POST(request: Request) {
     const originCode = getAirportCode(origin);
     const destinationCode = getAirportCode(destination);
 
-    console.log("Converted to airport codes:", {
+    console.log("[Flight API] Converted to airport codes:", {
       origin: `${origin} → ${originCode}`,
       destination: `${destination} → ${destinationCode}`,
     });
@@ -159,10 +162,13 @@ export async function POST(request: Request) {
       departure_location: originCode,
       arrival_location: destinationCode,
       departure_date_and_time: date,
-      return_date: null,
+      return_date: null, // MCP expects null here
     };
 
-    console.log("Departing flights request:", departingRequestBody);
+    console.log(
+      "[Flight API] Departing flights request to MCP:",
+      departingRequestBody
+    );
 
     const departingResponse = await fetch("http://localhost:8000/get_flight", {
       method: "POST",
@@ -171,10 +177,16 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify(departingRequestBody),
     });
+    console.log(
+      "[Flight API] Departing MCP response status:",
+      departingResponse.status
+    );
 
     if (!departingResponse.ok) {
+      const errorText = await departingResponse.text();
+      console.error("[Flight API] Departing MCP Error:", errorText);
       throw new Error(
-        `Departing flight search failed: ${departingResponse.statusText}`
+        `Departing flight search failed (${departingResponse.status})`
       );
     }
 
@@ -183,20 +195,28 @@ export async function POST(request: Request) {
       departingFlightData,
       4
     );
+    console.log(
+      `[Flight API] Processed ${departingFlights.length} departing flights.`
+    );
 
     let returningFlights: Flight[] = [];
 
     // Only search for returning flights if returnDate is provided
     if (returnDate) {
-      // Returning flights (swap origin and destination)
+      console.log(
+        "[Flight API] Return date provided, fetching returning flights..."
+      );
       const returningRequestBody = {
-        departure_location: destinationCode,
-        arrival_location: originCode,
+        departure_location: destinationCode, // Swapped
+        arrival_location: originCode, // Swapped
         departure_date_and_time: returnDate,
         return_date: null,
       };
 
-      console.log("Returning flights request:", returningRequestBody);
+      console.log(
+        "[Flight API] Returning flights request to MCP:",
+        returningRequestBody
+      );
 
       const returningResponse = await fetch(
         "http://localhost:8000/get_flight",
@@ -208,26 +228,42 @@ export async function POST(request: Request) {
           body: JSON.stringify(returningRequestBody),
         }
       );
+      console.log(
+        "[Flight API] Returning MCP response status:",
+        returningResponse.status
+      );
 
       if (!returningResponse.ok) {
-        throw new Error(
-          `Returning flight search failed: ${returningResponse.statusText}`
+        const errorText = await returningResponse.text();
+        console.error("[Flight API] Returning MCP Error:", errorText);
+        // Don't throw here, just log and return empty results for return leg
+        console.warn(
+          `Returning flight search failed (${returningResponse.status}), proceeding without return flights.`
+        );
+      } else {
+        const returningFlightData = await returningResponse.text();
+        returningFlights = processFlightData(returningFlightData, 4);
+        console.log(
+          `[Flight API] Processed ${returningFlights.length} returning flights.`
         );
       }
-
-      const returningFlightData = await returningResponse.text();
-      returningFlights = processFlightData(returningFlightData, 4);
     }
 
-    return NextResponse.json({
+    // Return the correct flight data structure
+    const finalResponse = {
       departingFlights,
       returningFlights,
-      hasReturn: returnDate !== null && returnDate !== undefined,
-    });
+      hasReturn:
+        returnDate !== null &&
+        returnDate !== undefined &&
+        returnDate !== "unknown", // Check unknown too
+    };
+    console.log("[Flight API] Sending Final Response:", finalResponse);
+    return NextResponse.json(finalResponse);
   } catch (error: any) {
-    console.error("Flight search error:", error);
+    console.error("[Flight API] Error:", error.message);
     return NextResponse.json(
-      { error: error.message || "Failed to search flights" },
+      { error: "Failed to process flight search: " + error.message },
       { status: 500 }
     );
   }
