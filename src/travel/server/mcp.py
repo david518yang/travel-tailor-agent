@@ -6,6 +6,8 @@ import os
 from dotenv import load_dotenv
 import asyncio
 from datetime import datetime
+from openmeteo_py import OWmanager
+from typing import Dict, Any
 
 app = FastAPI()
 
@@ -47,8 +49,9 @@ class FlightRequest(BaseModel):
     return_date: Optional[str] = None
 
 class WeatherRequest(BaseModel):
-    location: str
-    dates: List[str]
+    destination: str
+    startDate: str
+    endDate: str
 
 def get_airport_code(city: str) -> str:
     """
@@ -81,44 +84,65 @@ async def get_flight(request: FlightRequest):
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
 
-        params = {
+        # Prepare parameters for departure flight
+        departure_params = {
             "engine": "google_flights",
             "departure_id": departure_code,
             "arrival_id": arrival_code,
             "outbound_date": formatted_date,
             "currency": "USD",
             "hl": "en",
-            "api_key": api_key
+            "api_key": api_key,
+            "type": "2"  # One way
         }
 
-        # Add return date if provided (for round trips)
+        # If return date is provided, prepare parameters for return flight
+        return_params = None
         if request.return_date:
             try:
                 return_date_obj = datetime.strptime(request.return_date, "%Y-%m-%d")
-                params["return_date"] = return_date_obj.strftime("%Y-%m-%d")
-                params["type"] = "1"  # Round trip
+                return_params = {
+                    "engine": "google_flights",
+                    "departure_id": arrival_code,  # Swapped
+                    "arrival_id": departure_code,  # Swapped
+                    "outbound_date": return_date_obj.strftime("%Y-%m-%d"),
+                    "currency": "USD",
+                    "hl": "en",
+                    "api_key": api_key,
+                    "type": "2"  # One way
+                }
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid return date format. Use YYYY-MM-DD.")
-        else:
-            params["type"] = "2"  # One way
 
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                "https://serpapi.com/search",
-                params=params,
-                timeout=30.0
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            # Format the flight results
-            result = []
-            flights = data.get("best_flights", []) + data.get("other_flights", [])
+            # Create tasks for parallel execution
+            tasks = [client.get("https://serpapi.com/search", params=departure_params, timeout=30.0)]
+            if return_params:
+                tasks.append(client.get("https://serpapi.com/search", params=return_params, timeout=30.0))
             
-            if not flights:
-                return "No flights found for the specified route and dates."
+            # Execute API calls in parallel
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for idx, flight in enumerate(flights[:5]):  # top 5 flights
+            # Process departure flight results
+            departure_response = responses[0]
+            if isinstance(departure_response, Exception):
+                raise departure_response
+            departure_data = departure_response.json()
+            departure_flights = departure_data.get("best_flights", []) + departure_data.get("other_flights", [])
+
+            # Process return flight results if available
+            return_flights = []
+            if return_params and len(responses) > 1:
+                return_response = responses[1]
+                if isinstance(return_response, Exception):
+                    print(f"Error fetching return flights: {return_response}")
+                else:
+                    return_data = return_response.json()
+                    return_flights = return_data.get("best_flights", []) + return_data.get("other_flights", [])
+
+            # Format flight results
+            result = []
+            for idx, flight in enumerate(departure_flights[:5]):
                 flight_info = [f"Option {idx + 1}:"]
                 
                 price = flight.get("price")
@@ -166,8 +190,106 @@ async def get_weather(request: WeatherRequest):
     """
     Get weather information for a location and dates.
     """
-    # TODO: Implement weather API integration
-    return f"Weather forecast for {request.location} on dates {request.dates}"
+    try:
+        # Parse dates as UTC
+        start_date_obj = datetime.strptime(request.startDate, "%Y-%m-%d")
+        end_date_obj = datetime.strptime(request.endDate, "%Y-%m-%d")
+
+        # Format dates for Claude prompt
+        formatted_start_date = start_date_obj.strftime("%B %d")
+        formatted_end_date = end_date_obj.strftime("%B %d")
+
+        # Call Claude for historical description
+        load_dotenv()
+        claude_api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not claude_api_key:
+            raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY environment variable not set")
+
+        prompt = f"What is the typical weather in {request.destination} between {formatted_start_date} and {formatted_end_date}? Keep it under 3 or 4 sentences but talk about the weather patterns around that time of year in that location. Use fahrenheit for units and metric units for wind speed."
+        
+        # Prepare API call parameters
+        claude_request = {
+            "url": "https://api.anthropic.com/v1/messages",
+            "headers": {
+                "x-api-key": claude_api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            "json": {
+                "model": "claude-3-sonnet-20240229",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        }
+
+        weather_params = {
+            "latitude": 37.5503,
+            "longitude": 126.9971,
+            "daily": [
+                "temperature_2m_max",
+                "temperature_2m_min",
+                "wind_speed_10m_max",
+                "precipitation_probability_max",
+            ],
+            "forecast_days": 16,
+            "wind_speed_unit": "mph",
+            "temperature_unit": "fahrenheit",
+        }
+
+        async with httpx.AsyncClient() as client:
+            # Make both API calls in parallel
+            claude_task = client.post(**claude_request)
+            weather_task = client.get("https://api.open-meteo.com/v1/forecast", params=weather_params)
+            
+            responses = await asyncio.gather(claude_task, weather_task, return_exceptions=True)
+            
+            # Process Claude response
+            claude_response = responses[0]
+            if isinstance(claude_response, Exception):
+                print(f"Error getting Claude description: {claude_response}")
+                description = None
+            else:
+                claude_data = claude_response.json()
+                description = claude_data["content"][0]["text"]
+
+            # Process weather response
+            weather_response = responses[1]
+            if isinstance(weather_response, Exception):
+                print(f"Error fetching forecast data: {weather_response}")
+                forecasts = None
+                location = None
+            else:
+                weather_data = weather_response.json()
+                daily_data = weather_data.get("daily", {})
+                forecasts = []
+                
+                for i in range(len(daily_data.get("time", []))):
+                    current_date = daily_data["time"][i]
+                    if current_date >= request.startDate and current_date <= request.endDate:
+                        forecasts.append({
+                            "date": current_date,
+                            "maxTemperature": daily_data["temperature_2m_max"][i],
+                            "minTemperature": daily_data["temperature_2m_min"][i],
+                            "windSpeed": daily_data["wind_speed_10m_max"][i],
+                            "precipitationProbability": daily_data["precipitation_probability_max"][i],
+                        })
+
+                location = {
+                    "latitude": weather_params["latitude"],
+                    "longitude": weather_params["longitude"],
+                    "timezone": "UTC",
+                    "timezoneAbbreviation": "UTC"
+                }
+
+        return {
+            "description": description,
+            "destination": request.destination,
+            "forecasts": forecasts,
+            "location": location,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process weather request: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
