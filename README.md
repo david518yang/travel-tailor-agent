@@ -50,6 +50,7 @@ Travel Tailor is an AI-powered travel concierge application that helps you plan 
    ```
    ANTHROPIC_API_KEY=your_anthropic_api_key
    ```
+   *Note - The app will not function without an Anthropic API Key, as this is the LLM that powers the chatbot*
 
 4. Start the backend server:
 
