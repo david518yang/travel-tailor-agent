@@ -23,9 +23,24 @@ import {
   Sparkles,
   Info,
   SendHorizontal,
+  MapPin,
 } from "lucide-react";
 import { TravelRequest } from "../lib/claude";
 import { ScrollArea, ScrollBar } from "../components/ui/scroll-area";
+
+const styleEl =
+  typeof document !== "undefined" ? document.createElement("style") : null;
+if (styleEl) {
+  styleEl.textContent = `
+    .animation-delay-200 {
+      animation-delay: 200ms;
+    }
+    .animation-delay-400 {
+      animation-delay: 400ms;
+    }
+  `;
+  document.head.appendChild(styleEl);
+}
 
 type Flight = {
   option: string;
@@ -49,6 +64,19 @@ type WeatherLocation = {
   timezoneAbbreviation: string;
 };
 
+type Attraction = {
+  title: string;
+  reviews: number | string;
+  rating: number;
+  address: string;
+  website: string;
+  description: string;
+  thumbnail: string;
+  hours: string;
+  phone: string;
+  place_id: string;
+};
+
 type Message = {
   role: "user" | "assistant";
   content?: string;
@@ -64,6 +92,10 @@ type Message = {
     forecasts?: WeatherForecast[] | null;
     location?: WeatherLocation | null;
     destination: string;
+  };
+  attractions?: {
+    city: string;
+    attractions: Attraction[];
   };
   id?: string;
 };
@@ -163,6 +195,16 @@ const normalizeCityName = (city: string): string => {
   return cityNameVariations[lowerCity] || lowerCity; // Return mapped name or original lowercased name
 };
 
+const LoadingDots = () => {
+  return (
+    <span className="inline-flex items-center">
+      <span className="animate-pulse bg-blue-600 rounded-full h-1.5 w-1.5 mx-0.5"></span>
+      <span className="animate-pulse bg-blue-600 rounded-full h-1.5 w-1.5 mx-0.5 animation-delay-200"></span>
+      <span className="animate-pulse bg-blue-600 rounded-full h-1.5 w-1.5 mx-0.5 animation-delay-400"></span>
+    </span>
+  );
+};
+
 const FlightCard = ({ flight }: { flight: Flight }) => {
   const [isItineraryOpen, setIsItineraryOpen] = useState(false);
 
@@ -250,7 +292,7 @@ const FlightCard = ({ flight }: { flight: Flight }) => {
           <span className="font-medium">{segment.departure.airport}</span>
           <span className="ml-1">🛫</span>
         </div>
-        <div className="text-sm text-gray-500 ml-5">
+        <div className="text-sm text-gray-500">
           {segment.departure.formatted}
         </div>
       </div>
@@ -262,7 +304,9 @@ const FlightCard = ({ flight }: { flight: Flight }) => {
           <span className="mr-1">🛬</span>
           <span className="font-medium">{segment.arrival.airport}</span>
         </div>
-        <div className="text-sm text-gray-500">{segment.arrival.formatted}</div>
+        <div className="text-sm text-gray-500 text-right ml-5">
+          {segment.arrival.formatted}
+        </div>
       </div>
     </div>
   );
@@ -332,6 +376,72 @@ const FlightCard = ({ flight }: { flight: Flight }) => {
   );
 };
 
+const AttractionCard = ({ attraction }: { attraction: Attraction }) => {
+  // Simple card with name, rating and description
+  return (
+    <Card className="p-3 hover:shadow-lg transition-shadow duration-200 bg-white border border-gray-200 mb-3">
+      <CardHeader className="text-md font-semibold px-0 pt-0 pb-2 flex items-start">
+        <span className="text-gray-400 mr-2">📍</span>
+        <span>{attraction.title}</span>
+      </CardHeader>
+      <div className="px-0 pb-2 ml-1 flex items-center">
+        <span className="text-amber-500 mr-1">⭐</span>
+        <span className="text-sm text-gray-700 font-medium">
+          {attraction.rating.toFixed(1)}
+        </span>
+      </div>
+      <CardContent className="space-y-2 px-0 pb-0">
+        <div className="text-sm text-gray-700">{attraction.description}</div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// Add a helper function to safely use the performance API at the top level
+const safePerformance = {
+  now: () => {
+    return typeof performance !== "undefined" ? performance.now() : Date.now();
+  },
+  mark: (name: string) => {
+    if (
+      typeof performance !== "undefined" &&
+      typeof performance.mark === "function"
+    ) {
+      try {
+        performance.mark(name);
+      } catch (e) {
+        console.warn("Performance marking not supported", e);
+      }
+    }
+  },
+  measure: (name: string, startMark: string, endMark: string) => {
+    if (
+      typeof performance !== "undefined" &&
+      typeof performance.measure === "function"
+    ) {
+      try {
+        performance.measure(name, startMark, endMark);
+      } catch (e) {
+        console.warn("Performance measuring not supported", e);
+      }
+    }
+  },
+  getEntriesByName: (name: string) => {
+    if (
+      typeof performance !== "undefined" &&
+      typeof performance.getEntriesByName === "function"
+    ) {
+      try {
+        return performance.getEntriesByName(name);
+      } catch (e) {
+        console.warn("Performance entries not supported", e);
+        return [{ duration: 0 }];
+      }
+    }
+    return [{ duration: 0 }];
+  },
+};
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>("");
@@ -368,6 +478,11 @@ export default function Home() {
     }
   }, [messages]);
 
+  // Add effects to validate travelDetails state changes
+  useEffect(() => {
+    console.log("[Debug] Travel details updated:", travelDetails);
+  }, [travelDetails]);
+
   const missingFields = (): string[] => {
     const missing: string[] = [];
     if (travelDetails.start_date === "unknown") missing.push("start date");
@@ -394,13 +509,16 @@ export default function Home() {
       content: "Processing your request...",
     };
     setMessages((prev) => [...prev, loadingMessage]);
+
     try {
       const res = await fetch("/api/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
+
       setMessages((prev) => prev.filter((msg) => msg.id !== loadingId));
+
       if (!res.ok) {
         try {
           const errorData = await res.json();
@@ -411,6 +529,7 @@ export default function Home() {
           );
         }
       }
+
       const data = await res.json();
       const requiredFields = [
         "start_date",
@@ -418,6 +537,7 @@ export default function Home() {
         "origin",
         "destination",
       ];
+
       for (const field of requiredFields) {
         if (!(field in data))
           throw new Error(`Missing required field: ${field}`);
@@ -429,14 +549,17 @@ export default function Home() {
         origin: normalizeCityName(data.origin),
         destination: normalizeCityName(data.destination),
       };
+
       console.log(
         "[Client Parse] Original vs Normalized Cities:",
         { O_orig: data.origin, D_orig: data.destination },
         { O_norm: normalizedData.origin, D_norm: normalizedData.destination }
       );
 
-      setTravelDetails(normalizedData); // Set state with normalized data
-      return normalizedData; // Return normalized data
+      // Set state with normalized data
+      setTravelDetails(normalizedData);
+
+      return normalizedData;
     } catch (error: any) {
       console.error("Error parsing travel request:", error);
       setMessages((prev) => [
@@ -511,21 +634,90 @@ export default function Home() {
     }
   };
 
-  const fetchFlights = async (details: TravelRequest) => {
-    console.log("Fetching flights with details:", details);
+  const fetchFlights = async (
+    details: TravelRequest
+  ): Promise<{
+    departingFlights: Flight[];
+    returningFlights: Flight[];
+    hasReturn: boolean;
+  } | null> => {
+    console.log("[Client Flights] Fetching flights with details:", details);
+    const flightStartTime = safePerformance.now();
+
+    // Validate input
+    if (
+      !details ||
+      !details.origin ||
+      !details.destination ||
+      details.origin === "unknown" ||
+      details.destination === "unknown"
+    ) {
+      console.error("[Client Flights] Invalid flight details:", details);
+      return null;
+    }
+
     try {
+      // Normalize city names before sending to API
+      const normalizedOrigin = normalizeCityName(details.origin);
+      const normalizedDestination = normalizeCityName(details.destination);
+
+      // Double check that normalization happened properly
+      if (
+        normalizedOrigin === "unknown" ||
+        normalizedDestination === "unknown"
+      ) {
+        console.error("[Client Flights] Normalization failed:", {
+          origin: details.origin,
+          destination: details.destination,
+          normalizedOrigin,
+          normalizedDestination,
+        });
+        return null;
+      }
+
+      console.log(
+        `[Client Flights] Normalized cities: ${normalizedOrigin} → ${normalizedDestination}`
+      );
+
+      // Performance mark for API call start
+      const apiStartTime = safePerformance.now();
+
       const response = await fetch("/api/flight", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          origin: details.origin,
-          destination: details.destination,
+          origin: normalizedOrigin,
+          destination: normalizedDestination,
           date: details.start_date,
           returnDate: details.end_date !== "unknown" ? details.end_date : null,
         }),
       });
+
+      // Calculate API response time
+      const apiEndTime = safePerformance.now();
+      console.log(
+        `[Client Flights] API response time: ${(
+          apiEndTime - apiStartTime
+        ).toFixed(0)}ms`
+      );
+
       console.log("Flight API response status:", response.status);
-      if (!response.ok) throw new Error("Failed to fetch flights");
+
+      if (!response.ok) {
+        // Try to get error message from API
+        let errorMessage = "Failed to fetch flights";
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+        } catch (_) {
+          // If parsing JSON fails, use status text
+          errorMessage = `Server error (${response.status}): ${response.statusText}`;
+        }
+
+        console.error("Flight API error:", errorMessage);
+        return null;
+      }
+
       const data = await response.json();
       console.log("Flight API response data:", data);
 
@@ -533,60 +725,89 @@ export default function Home() {
         (data.departingFlights && data.departingFlights.length > 0) ||
         (data.returningFlights && data.returningFlights.length > 0)
       ) {
-        const flightMessage: Message = {
-          role: "assistant",
-          flights: {
-            departingFlights: data.departingFlights || [],
-            returningFlights: data.returningFlights || [],
-            hasReturn: data.hasReturn,
-            origin: details.origin,
-            destination: details.destination,
-          },
+        const flightData = {
+          departingFlights: data.departingFlights || [],
+          returningFlights: data.returningFlights || [],
+          hasReturn: data.hasReturn,
         };
-        setMessages((prev) => [...prev, flightMessage]);
+
+        // Calculate total function execution time
+        const flightEndTime = safePerformance.now();
+        console.log(
+          `[Client Flights] Total execution time: ${(
+            flightEndTime - flightStartTime
+          ).toFixed(0)}ms`
+        );
+
+        return flightData;
       } else {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content:
-              "Sorry, I couldn't find any flights for that route or date.",
-          },
-        ]);
+        return null;
       }
     } catch (error) {
       console.error("Error fetching flights:", error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: "Sorry, an error occurred while searching for flights.",
-        },
-      ]);
+      return null;
     }
   };
 
-  const fetchWeather = async (details: TravelRequest) => {
+  const fetchWeather = async (
+    details: TravelRequest
+  ): Promise<{
+    description: string;
+    destination: string;
+    forecasts: WeatherForecast[] | null;
+    location: WeatherLocation | null;
+  } | null> => {
     console.log("--- Fetching Weather (Client) ---");
     console.log("[Client Weather] Request Details:", details);
+    const weatherStartTime = safePerformance.now();
+
     try {
+      if (!details.destination || details.destination === "unknown") {
+        console.error(
+          "[Client Weather] Invalid destination:",
+          details.destination
+        );
+        throw new Error("Missing destination for weather information");
+      }
+
+      const normalizedDestination = normalizeCityName(details.destination);
+      console.log(
+        `[Client Weather] Using normalized destination: '${normalizedDestination}' (original: '${details.destination}')`
+      );
+
+      // Performance mark for API call start
+      const apiStartTime = safePerformance.now();
+
       const response = await fetch("/api/weather", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          destination: details.destination,
+          destination: normalizedDestination,
           startDate: details.start_date,
           endDate: details.end_date,
         }),
       });
+
+      // Calculate API response time
+      const apiEndTime = safePerformance.now();
+      console.log(
+        `[Client Weather] API response time: ${(
+          apiEndTime - apiStartTime
+        ).toFixed(0)}ms`
+      );
+
       console.log("[Client Weather] API Response Status:", response.status);
+
       if (!response.ok) {
         const errorText = await response.text();
         console.error("[Client Weather] API Error Response Text:", errorText);
-        throw new Error(`Failed to fetch weather (${response.status})`);
+        throw new Error(
+          `Failed to fetch weather (${response.status}): ${errorText}`
+        );
       }
+
       const data = await response.json();
-      console.log("[Client Weather] API Response Data Parsed:", data);
+      console.log("[Client Weather] API Response Data:", data);
 
       // Ensure essential data is present
       if (!data.description || !data.destination) {
@@ -597,80 +818,325 @@ export default function Home() {
         throw new Error("Incomplete weather data from API");
       }
 
-      // Create the weather message object
-      const weatherMessage: Message = {
-        role: "assistant",
-        weather: {
-          description: data.description,
-          destination: data.destination,
-          forecasts: data.forecasts || null, // Assign null if missing
-          location: data.location || null, // Assign null if missing
-        },
+      // Create the weather data object
+      const weatherData = {
+        description: data.description,
+        destination: normalizedDestination,
+        forecasts: data.forecasts || null,
+        location: data.location || null,
       };
+
+      // Calculate total function execution time
+      const weatherEndTime = safePerformance.now();
       console.log(
-        "[Client Weather] Created Weather Message Object:",
-        weatherMessage
+        `[Client Weather] Total execution time: ${(
+          weatherEndTime - weatherStartTime
+        ).toFixed(0)}ms`
       );
 
-      setMessages((prev) => {
-        console.log("[Client Weather] Adding weather message to state.");
-        return [...prev, weatherMessage];
-      });
+      return weatherData;
     } catch (error: any) {
       console.error(
         "[Client Weather] Error fetching or processing weather:",
         error
       );
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `Sorry, an error occurred while fetching weather information: ${error.message}`,
-        },
-      ]);
+      return null;
     }
   };
 
-  const processTravelInfo = async (details: TravelRequest) => {
-    setIsLoading(true);
-    const loadingId = `loading-results-${Date.now()}`;
-    const loadingMessage: Message = {
-      id: loadingId,
-      role: "assistant",
-      content: "Thanks! Looking up flights and weather for you now...",
-    };
-    setMessages((prev) => [...prev, loadingMessage]);
+  const fetchAttractions = async (
+    city: string
+  ): Promise<{
+    city: string;
+    attractions: Attraction[];
+  } | null> => {
+    console.log("[Client Attractions] Fetching attractions");
+    const attractionStartTime = safePerformance.now();
 
     try {
-      await Promise.all([fetchFlights(details), fetchWeather(details)]);
-      // Add follow-up message after results are added by fetch functions
-      const followUpMessage: Message = {
-        role: "assistant",
-        content: `Okay, I've found flights and weather info for ${capitalizeCityName(
-          details.destination
-        )}. Let me know if you want to know anything else about the destination!`,
+      if (!city || city === "unknown") {
+        console.error("[Client Attractions] Invalid city provided:", city);
+        return {
+          city: city || "unknown",
+          attractions: [],
+        };
+      }
+
+      // Normalize city name
+      const normalizedCity = normalizeCityName(city);
+      console.log(
+        `[Client Attractions] Normalized city: '${normalizedCity}' (original: '${city}')`
+      );
+
+      // Performance mark for API call start
+      const apiStartTime = safePerformance.now();
+
+      const response = await fetch("/api/attractions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ city: normalizedCity }),
+      });
+
+      // Calculate API response time
+      const apiEndTime = safePerformance.now();
+      console.log(
+        `[Client Attractions] API response time: ${(
+          apiEndTime - apiStartTime
+        ).toFixed(0)}ms`
+      );
+
+      if (!response.ok) {
+        const errorMessage = `Failed to fetch attractions: ${response.status} ${response.statusText}`;
+        console.error(errorMessage);
+        return {
+          city: normalizedCity,
+          attractions: [],
+        };
+      }
+
+      const data = await response.json();
+      console.log(
+        `[Client Attractions] Received data for ${normalizedCity}:`,
+        data
+      );
+
+      if (!data || !data.attractions) {
+        console.error(
+          `[Client Attractions] Invalid data format for ${normalizedCity}:`,
+          data
+        );
+        return {
+          city: normalizedCity,
+          attractions: [],
+        };
+      }
+
+      console.log(
+        `[Client Attractions] Found ${data.attractions.length} attractions for ${normalizedCity}`
+      );
+
+      // Ensure each attraction has the required fields
+      const standardizedAttractions = data.attractions.map(
+        (attraction: any) => ({
+          title: attraction.title || `Attraction in ${normalizedCity}`,
+          description:
+            attraction.description ||
+            `A popular attraction in ${normalizedCity}.`,
+          address: attraction.address || normalizedCity,
+          rating: attraction.rating || 4.5,
+          reviews: attraction.reviews || 1000,
+          website: attraction.website || "",
+          thumbnail: attraction.thumbnail || "",
+          hours: attraction.hours || "",
+          phone: attraction.phone || "",
+          place_id: attraction.place_id || "",
+        })
+      );
+
+      // Calculate total function execution time
+      const attractionEndTime = safePerformance.now();
+      console.log(
+        `[Client Attractions] Total execution time: ${(
+          attractionEndTime - attractionStartTime
+        ).toFixed(0)}ms`
+      );
+
+      return {
+        city: normalizedCity,
+        attractions: standardizedAttractions,
       };
-      // Use setTimeout to ensure it appears after flight/weather messages
-      setTimeout(() => {
-        setMessages((prev) => [
-          ...prev.filter((msg) => msg.id !== loadingId),
-          followUpMessage,
-        ]); // Remove loading & add follow-up
-        setChatMode("general_qa"); // <-- Transition mode
-        setIsLoading(false);
-      }, 100); // Small delay to allow state updates from fetches
     } catch (error) {
-      console.error("Error processing travel info fetches:", error);
-      setMessages((prev) => [
-        ...prev.filter((msg) => msg.id !== loadingId),
+      console.error(`[Client Attractions] Error:`, error);
+      return {
+        city: normalizeCityName(city),
+        attractions: [],
+      };
+    }
+  };
+
+  const processTravelInfo = async (
+    travelDetails: TravelRequest,
+    setChatLoading: (loading: boolean) => void,
+    setMessages: (messages: Message[]) => void,
+    messages: Message[],
+    setChatInput: (input: string) => void,
+    setChatMode: (mode: "gathering" | "general_qa") => void
+  ) => {
+    setChatLoading(true);
+    try {
+      console.log("Processing travel info with details:", travelDetails);
+
+      // Verify that we have all required fields
+      if (
+        travelDetails.origin === "unknown" ||
+        travelDetails.destination === "unknown" ||
+        travelDetails.start_date === "unknown"
+      ) {
+        console.error("Missing required travel details:", travelDetails);
+        setMessages([
+          ...messages,
+          {
+            role: "assistant",
+            content:
+              "I need complete information about your trip. Please provide the origin, destination, and travel dates.",
+          },
+        ]);
+        setChatMode("gathering");
+        setChatLoading(false);
+        return;
+      }
+
+      // Add a loading message with more detailed status
+      const loadingId = `loading-results-${Date.now()}`;
+      const loadingMessage: Message = {
+        id: loadingId,
+        role: "assistant",
+        content: `Looking up travel options from ${capitalizeCityName(
+          travelDetails.origin
+        )} to ${capitalizeCityName(
+          travelDetails.destination
+        )}. This might take a moment...`,
+      };
+
+      // Update messages with loading message
+      let currentMessages = [...messages, loadingMessage];
+      setMessages(currentMessages);
+
+      try {
+        // Add performance marks to measure API fetch times
+        safePerformance.mark("api-calls-start");
+
+        // Fetch flights, weather, and attractions in parallel
+        const [flightsResponse, weatherResponse, attractionsResponse] =
+          await Promise.all([
+            fetchFlights(travelDetails),
+            fetchWeather(travelDetails),
+            fetchAttractions(travelDetails.destination),
+          ]);
+
+        safePerformance.mark("api-calls-end");
+        safePerformance.measure(
+          "api-calls-duration",
+          "api-calls-start",
+          "api-calls-end"
+        );
+        const apiDuration =
+          safePerformance.getEntriesByName("api-calls-duration")[0]?.duration ||
+          0;
+        console.log(`All API calls completed in ${apiDuration.toFixed(0)}ms`);
+
+        // Update loading message to indicate data is being processed
+        const processingMessage: Message = {
+          id: loadingId,
+          role: "assistant",
+          content:
+            "Processing your travel information and preparing results...",
+        };
+        currentMessages = currentMessages.map((msg) =>
+          msg.id === loadingId ? processingMessage : msg
+        );
+        setMessages(currentMessages);
+
+        // Short delay to ensure loading animation is visible (especially for cached results)
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        // Remove the loading message and add a summary message
+        currentMessages = currentMessages.filter((msg) => msg.id !== loadingId);
+
+        const summaryMessage: Message = {
+          role: "assistant",
+          content: `Here's what I found for your trip from ${capitalizeCityName(
+            travelDetails.origin
+          )} to ${capitalizeCityName(travelDetails.destination)} on ${
+            travelDetails.start_date
+          }:`,
+        };
+
+        currentMessages = [...currentMessages, summaryMessage];
+        setMessages(currentMessages);
+
+        // Add flights message if available
+        if (flightsResponse) {
+          const flightMessage: Message = {
+            role: "assistant",
+            flights: {
+              ...flightsResponse,
+              origin: travelDetails.origin,
+              destination: travelDetails.destination,
+            },
+          };
+          currentMessages = [...currentMessages, flightMessage];
+          setMessages(currentMessages);
+        }
+
+        // Add weather message if available
+        if (weatherResponse) {
+          const weatherMessage: Message = {
+            role: "assistant",
+            weather: weatherResponse,
+          };
+          currentMessages = [...currentMessages, weatherMessage];
+          setMessages(currentMessages);
+        }
+
+        // Add attractions message if available
+        if (
+          attractionsResponse &&
+          attractionsResponse.attractions &&
+          attractionsResponse.attractions.length > 0
+        ) {
+          const attractionsMessage: Message = {
+            role: "assistant",
+            attractions: attractionsResponse,
+          };
+          currentMessages = [...currentMessages, attractionsMessage];
+          setMessages(currentMessages);
+        }
+
+        // Add a follow-up message
+        const followUpMessage: Message = {
+          role: "assistant",
+          content: `I've found information for your trip to ${capitalizeCityName(
+            travelDetails.destination
+          )}. Let me know if you want to know anything else about the destination!`,
+        };
+        currentMessages = [...currentMessages, followUpMessage];
+        setMessages(currentMessages);
+
+        // Reset chat input and mode
+        setChatInput("");
+        setChatMode("general_qa");
+      } catch (error) {
+        console.error("Error processing travel info:", error);
+
+        // Remove loading message and add error message
+        currentMessages = currentMessages.filter((msg) => msg.id !== loadingId);
+        currentMessages = [
+          ...currentMessages,
+          {
+            role: "assistant",
+            content:
+              "Sorry, there was an error getting the travel details. Please try again.",
+          },
+        ];
+        setMessages(currentMessages);
+      }
+    } catch (error) {
+      console.error("Unexpected error processing travel info:", error);
+      setMessages([
+        ...messages,
         {
           role: "assistant",
-          content: "Sorry, there was an error getting the travel details.",
+          content:
+            "I'm sorry, but I couldn't process your travel request. Please try again with different information.",
         },
       ]);
-      setIsLoading(false);
+      setChatMode("general_qa");
+    } finally {
+      setChatLoading(false);
     }
-    // Removed finally block as state is set within try/catch
   };
 
   // --- New function: handleGeneralQuery ---
@@ -694,7 +1160,11 @@ export default function Home() {
       role: "assistant",
       content: "Thinking...",
     };
-    setMessages((prev) => [...prev, loadingMessage]);
+    // Get the current messages including the user's query
+    let currentMessages = [...messages];
+    // Add loading message
+    currentMessages = [...currentMessages, loadingMessage];
+    setMessages(currentMessages);
 
     try {
       const response = await fetch("/api/general_query", {
@@ -703,7 +1173,9 @@ export default function Home() {
         body: JSON.stringify({ query, destination }),
       });
 
-      setMessages((prev) => prev.filter((msg) => msg.id !== loadingId)); // Remove loading
+      // Remove loading message but preserve other messages
+      currentMessages = currentMessages.filter((msg) => msg.id !== loadingId);
+      setMessages(currentMessages);
 
       const data = await response.json(); // Try parsing JSON regardless of status first
       console.log("[Client Query] Parsed Response:", data);
@@ -724,21 +1196,25 @@ export default function Home() {
         throw new Error("Received an invalid response from the server.");
       }
 
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: data.answer },
-      ]);
+      // Add the answer message
+      const answerMessage: Message = {
+        role: "assistant",
+        content: data.answer,
+      };
+      currentMessages = [...currentMessages, answerMessage];
+      setMessages(currentMessages);
     } catch (error: any) {
       console.error("Error handling general query:", error);
       // Make sure loading message is removed even if parsing response.json() fails
-      setMessages((prev) => prev.filter((msg) => msg.id !== loadingId));
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `Sorry, I couldn't answer that: ${error.message}`,
-        },
-      ]);
+      currentMessages = currentMessages.filter((msg) => msg.id !== loadingId);
+
+      // Add error message
+      const errorMessage: Message = {
+        role: "assistant",
+        content: `Sorry, I couldn't answer that: ${error.message}`,
+      };
+      currentMessages = [...currentMessages, errorMessage];
+      setMessages(currentMessages);
     } finally {
       setIsLoading(false);
     }
@@ -747,8 +1223,13 @@ export default function Home() {
   // --- Updated handleSend ---
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
+
+    // Add the user message to the chat
     const userMsg: Message = { role: "user", content: input };
-    setMessages((prev) => [...prev, userMsg]);
+    const updatedMessages = [...messages, userMsg];
+    setMessages(updatedMessages);
+
+    // Save the current input and clear it
     const currentInput = input;
     setInput("");
 
@@ -758,11 +1239,15 @@ export default function Home() {
       try {
         if (waitingForFields) {
           try {
+            // Update missing fields
             const updated = await updateMissingFields(
               currentInput,
               travelDetails
             );
+
+            // Important: Set the state with updated details
             setTravelDetails(updated);
+
             const stillMissing = Object.entries(updated)
               .filter(([_, value]) => value === "unknown")
               .map(([key]) => {
@@ -785,18 +1270,30 @@ export default function Home() {
                 role: "assistant",
                 content: getMissingFieldsPrompt(stillMissing),
               };
-              setMessages((prev) => [...prev, missingMsg]);
+              setMessages([...updatedMessages, missingMsg]);
             } else {
               setWaitingForFields(false);
-              await processTravelInfo(updated); // Process & transition mode
+              console.log("All fields collected, processing with:", updated);
+
+              // Use the updated object directly, pass the updatedMessages to preserve user message
+              await processTravelInfo(
+                updated, // Use updated instead of travelDetails state
+                setIsLoading,
+                setMessages,
+                updatedMessages, // Pass the updated messages array that includes user message
+                setInput,
+                setChatMode
+              );
             }
           } catch (error) {
             /* Handled in updateMissingFields */
           }
         } else {
           try {
+            // Parse travel request
             const parsed = await parseTravelRequest(currentInput);
-            // travelDetails set inside parseTravelRequest
+
+            // Check for missing fields
             const unknown = Object.entries(parsed)
               .filter(([_, value]) => value === "unknown")
               .map(([key]) => {
@@ -820,9 +1317,22 @@ export default function Home() {
                 role: "assistant",
                 content: getMissingFieldsPrompt(unknown),
               };
-              setMessages((prev) => [...prev, needMsg]);
+              setMessages([...updatedMessages, needMsg]);
             } else {
-              await processTravelInfo(parsed); // Process & transition mode
+              console.log(
+                "All fields provided in initial request, processing with:",
+                parsed
+              );
+
+              // Use the parsed object directly, pass the updatedMessages to preserve user message
+              await processTravelInfo(
+                parsed, // Use parsed instead of travelDetails state
+                setIsLoading,
+                setMessages,
+                updatedMessages, // Pass the updated messages array that includes user message
+                setInput,
+                setChatMode
+              );
             }
           } catch (error) {
             /* Handled in parseTravelRequest */
@@ -830,17 +1340,18 @@ export default function Home() {
         }
       } catch (error) {
         console.error("Unexpected error in gathering mode:", error);
-        setMessages((prev) => [
-          ...prev,
+        setMessages([
+          ...updatedMessages,
           {
             role: "assistant",
             content: "An unexpected error occurred. Please try again.",
           },
         ]);
-        setIsLoading(false); // Ensure loading stops
+        setIsLoading(false);
       }
     } else {
       // --- General QA Mode Logic ---
+      // Pass the current message collection to preserve history
       await handleGeneralQuery(currentInput, travelDetails.destination);
     }
   };
@@ -861,7 +1372,7 @@ export default function Home() {
             className="h-5 w-5 mr-2.5 text-blue-600"
             strokeWidth={2}
           />
-          Travel Assistant
+          Travel Tailor Agent
         </h1>
       </header>
 
@@ -895,9 +1406,9 @@ export default function Home() {
                       </h3>
                       <div className="flex flex-col sm:flex-row gap-2">
                         {[
-                          "Flights from SF to Paris in early June",
-                          "Weather in Rome next week",
-                          "Recommend things to do in Tokyo",
+                          "Plan my trip from SF to Paris in early June",
+                          "I'm thinking of going Rome next week",
+                          "Recommend things to do in Tokyo in May",
                         ].map((prompt) => (
                           <button
                             key={prompt}
@@ -915,9 +1426,20 @@ export default function Home() {
             ) : (
               messages.map((msg, idx) => {
                 const isLastMessage = idx === messages.length - 1;
+                console.log(`Message ${idx} properties:`, {
+                  role: msg.role,
+                  hasContent: !!msg.content,
+                  hasFlights: !!msg.flights,
+                  hasWeather: !!msg.weather,
+                  hasAttractions: !!msg.attractions,
+                  attractionsCount: msg.attractions?.attractions?.length || 0,
+                });
 
                 // If it's a text message
                 if (msg.content) {
+                  // Check if this is a loading message
+                  const isLoadingMessage = msg.id?.includes("loading");
+
                   return (
                     <ChatBubble
                       key={msg.id || idx}
@@ -931,13 +1453,18 @@ export default function Home() {
                         variant={msg.role === "user" ? "sent" : "received"}
                       >
                         {msg.content}
+                        {isLoadingMessage && (
+                          <span className="ml-2 inline-block">
+                            <LoadingDots />
+                          </span>
+                        )}
                       </ChatBubbleMessage>
                     </ChatBubble>
                   );
                 }
 
-                // If it's a flight or weather message
-                if (msg.flights || msg.weather) {
+                // If it's a flight, weather, or attractions message
+                if (msg.flights || msg.weather || msg.attractions) {
                   return (
                     <div
                       key={msg.id || idx}
@@ -1131,6 +1658,42 @@ export default function Home() {
                                   </ScrollArea>
                                 </div>
                               )}
+                          </div>
+                        )}
+                        {msg.attractions && (
+                          <div className="mt-6 mb-4 border-t border-indigo-100 pt-4">
+                            <div className="flex items-center bg-indigo-50 p-2 rounded-lg mb-3">
+                              <MapPin className="h-5 w-5 text-indigo-500 mr-1.5" />
+                              <h3 className="text-md font-semibold text-indigo-700">
+                                {msg.attractions.attractions &&
+                                msg.attractions.attractions.length > 0
+                                  ? `Top Attractions in ${capitalizeCityName(
+                                      msg.attractions.city
+                                    )}`
+                                  : `No attractions found for ${capitalizeCityName(
+                                      msg.attractions.city
+                                    )}`}
+                              </h3>
+                            </div>
+
+                            {msg.attractions.attractions &&
+                            msg.attractions.attractions.length > 0 ? (
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                                {msg.attractions.attractions.map(
+                                  (attraction, idx) => (
+                                    <AttractionCard
+                                      key={`${attraction.title}-${idx}`}
+                                      attraction={attraction}
+                                    />
+                                  )
+                                )}
+                              </div>
+                            ) : (
+                              <div className="text-sm text-gray-500 italic p-3">
+                                I couldn't find attractions information for this
+                                location. Please try another city.
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
