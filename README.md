@@ -11,6 +11,8 @@ Travel Tailor is an AI-powered travel concierge application that helps you plan 
 - **Conversational Interface**: Interact naturally with our AI assistant to get answers about your destination
 - **Seamless Experience**: All your travel information is presented in an intuitive, easy-to-navigate interface
 
+## [Link to Video Demo](https://streamable.com/mnk91p)
+
 ## Technology Stack
 
 - **Frontend**: Next.js, React, TypeScript, Tailwind CSS
