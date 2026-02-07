@@ -1,5 +1,7 @@
 # Travel Tailor Agent
 
+<img width="1512" height="861" alt="travel-tailor" src="https://github.com/user-attachments/assets/ba28620c-68e1-4735-a180-c1c5ca031ec8" />
+
 Travel Tailor is an AI-powered travel concierge application that helps you plan your trips with personalized recommendations and real-time information.
 
 ## Features
